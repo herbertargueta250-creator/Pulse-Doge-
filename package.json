@@ -1,0 +1,9 @@
+{
+  "name": "pulse-dodge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pulse Dodge — a minimal arcade dodging game with a Neon-backed leaderboard.",
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4"
+  }
+}
