@@ -1,0 +1,19 @@
+name = "pulse-doge"
+main = "src/index.js"
+compatibility_date = "2026-08-20"
+
+# The Neon serverless driver needs Node built-ins
+compatibility_flags = ["nodejs_compat"]
+
+# Static site lives in public/ so node_modules and source files
+# are never uploaded as public assets
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[observability]
+enabled = true
+
+# DATABASE_URL is a SECRET — do not put it here.
+# Set it with:  npx wrangler secret put DATABASE_URL
+# (or in the dashboard under Settings -> Variables and Secrets)
