@@ -1,13 +1,12 @@
 /**
  * Cloudflare Pages Function — repo path MUST be: functions/api/scores.js
  *
- * The folder path becomes the URL, so this file answers /api/scores.
+ * GET  /api/scores                      -> { top: [...50], total }
+ * GET  /api/scores?score=133&name=Haar  -> also includes { you: {rank, ...} }
+ * POST /api/scores                      -> saves a run, returns its rank
  *
- * No npm packages: talks to Neon's HTTP SQL endpoint with plain fetch(),
- * so the build cannot fail on a missing dependency.
- *
- * Needs the DATABASE_URL secret (Neon POOLED connection string), set in
- * Cloudflare -> your Pages project -> Settings -> Variables and Secrets.
+ * No npm packages: talks to Neon's HTTP SQL endpoint with plain fetch().
+ * Needs the DATABASE_URL secret (Neon POOLED connection string).
  */
 
 const JSON_HEADERS = {
@@ -19,6 +18,9 @@ const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 
 const VALID_CHARACTERS = ["orb", "dash", "hopper", "phase"];
+
+/** How many names the board shows. Raise freely — storage is not the limit. */
+const BOARD_SIZE = 50;
 
 /** Run one parameterised statement against Neon over HTTP. */
 async function runSql(connectionString, query, params = []) {
@@ -47,24 +49,58 @@ async function runSql(connectionString, query, params = []) {
   return data.rows || [];
 }
 
-/* GET /api/scores  ->  top 20 */
-export async function onRequestGet({ env }) {
+/**
+ * Where a score sits in the world.
+ * rank = how many scores beat it, plus one.
+ */
+async function rankFor(connectionString, score) {
+  const rows = await runSql(
+    connectionString,
+    `select
+       (select count(*) from scores)                        as total,
+       (select count(*) + 1 from scores where score > $1)   as rank`,
+    [score]
+  );
+  const r = rows[0] || {};
+  return { rank: Number(r.rank) || 1, total: Number(r.total) || 0 };
+}
+
+/* ---------------- GET ---------------- */
+export async function onRequestGet({ request, env }) {
   if (!env.DATABASE_URL) {
     return json({
       error: "DATABASE_URL is not configured",
       bindings: Object.keys(env),
     }, 500);
   }
+
   try {
     // "character" is a reserved word in Postgres, so it must stay quoted
-    const rows = await runSql(
+    const top = await runSql(
       env.DATABASE_URL,
       `select username, score, "character"
          from scores
         order by score desc, created_at asc
-        limit 20`
+        limit ${BOARD_SIZE}`
     );
-    return json(rows);
+
+    const url = new URL(request.url);
+    const askedScore = Number(url.searchParams.get("score"));
+    const askedName = url.searchParams.get("name");
+
+    let you = null;
+    let total = top.length;
+
+    if (Number.isFinite(askedScore) && askedScore > 0) {
+      const r = await rankFor(env.DATABASE_URL, askedScore);
+      total = r.total;
+      you = { rank: r.rank, score: askedScore, username: askedName || "you" };
+    } else {
+      const r = await runSql(env.DATABASE_URL, `select count(*) as total from scores`);
+      total = Number((r[0] || {}).total) || 0;
+    }
+
+    return json({ top, total, you });
   } catch (err) {
     console.error("leaderboard read failed:", err);
     return json({
@@ -74,7 +110,7 @@ export async function onRequestGet({ env }) {
   }
 }
 
-/* POST /api/scores  ->  save one run */
+/* ---------------- POST ---------------- */
 export async function onRequestPost({ request, env }) {
   if (!env.DATABASE_URL) {
     return json({ error: "DATABASE_URL is not configured" }, 500);
@@ -103,7 +139,9 @@ export async function onRequestPost({ request, env }) {
        values ($1, $2, $3)`,
       [username, score, character]
     );
-    return json({ ok: true }, 201);
+    // tell the player where that run landed
+    const { rank, total } = await rankFor(env.DATABASE_URL, score);
+    return json({ ok: true, rank, total }, 201);
   } catch (err) {
     console.error("score insert failed:", err);
     return json({
