@@ -1,0 +1,13 @@
+# Cloudflare Pages headers — repo path: public/_headers
+#
+# The HTML shell must never be cached, or devices keep running an old
+# build after you deploy. Everything else can cache normally.
+
+/
+  Cache-Control: no-cache, must-revalidate
+
+/index.html
+  Cache-Control: no-cache, must-revalidate
+
+/api/*
+  Cache-Control: no-store
