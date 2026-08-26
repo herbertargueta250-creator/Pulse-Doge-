@@ -60,7 +60,9 @@
   .char{width:128px;padding:18px 12px 14px;border:1px solid #232B3A;border-radius:14px;
     background:var(--bg2);cursor:pointer;transition:border-color .2s,transform .2s;position:relative;
     touch-action:manipulation}
-  .char::after,.btn::after{content:"";position:absolute;inset:-8px;border-radius:inherit}
+  /* invisible hit-area padding — MUST NOT eat the click itself */
+  .char::after,.btn::after{content:"";position:absolute;inset:-8px;
+    border-radius:inherit;pointer-events:none}
   .char:hover{transform:translateY(-3px)}
   .char.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 8px 30px -12px rgba(139,157,255,.5)}
   .char.locked{cursor:default;opacity:.55}
@@ -72,7 +74,9 @@
     font-family:ui-monospace,monospace;pointer-events:none}
   .char-cost.ok{color:var(--accent)}
   .lockicon{position:absolute;top:10px;right:12px;font-size:11px;color:var(--dim);pointer-events:none}
-  .kfocus{outline:2px solid var(--ink) !important;outline-offset:4px;border-radius:14px}
+  .kfocus{outline:2px solid var(--ink) !important;outline-offset:4px;border-radius:14px;
+    box-shadow:0 0 0 6px rgba(242,245,247,.10) !important}
+  .lbtab.kfocus,.btn.kfocus{outline-offset:5px}
 
   .btn{pointer-events:auto;border:1px solid var(--accent);background:transparent;color:var(--ink);
     font:inherit;font-size:14px;letter-spacing:.28em;text-transform:uppercase;
@@ -82,6 +86,8 @@
     display:flex;align-items:center;justify-content:center}
   .btn *{pointer-events:none}
   .btn:hover,.btn:active{background:var(--accent);color:var(--bg)}
+  .btn:active{transform:scale(.97)}
+  .lbtab:active{transform:scale(.97)}
   .btn:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
   .btn.quiet{border-color:#2A3345}
 
@@ -94,14 +100,14 @@
   #unlockMsg{color:var(--gold);font-size:12px;letter-spacing:.2em;text-transform:uppercase;min-height:16px}
 
   /* corner controls */
-  #corner{position:fixed;bottom:14px;right:14px;z-index:20;display:flex;flex-direction:column;gap:10px}
+  #corner{position:fixed;bottom:14px;right:14px;z-index:30;display:flex;flex-direction:column;gap:12px}
   .cbtn{position:relative;width:46px;height:46px;
     border:1px solid #2A3345;border-radius:12px;background:rgba(21,27,38,.7);
     color:var(--dim);cursor:pointer;font-size:17px;line-height:1;
     display:flex;align-items:center;justify-content:center;
     touch-action:manipulation;transition:color .2s,border-color .2s;
     backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
-  .cbtn::after{content:"";position:absolute;inset:-6px;border-radius:inherit}
+  .cbtn::after{content:"";position:absolute;inset:-6px;border-radius:inherit;pointer-events:none}
   .cbtn:hover{color:var(--ink);border-color:var(--accent)}
   .cbtn.off{opacity:.45}
   .cbtn:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
@@ -137,6 +143,14 @@
   /* leaderboard */
   #lbWrap{width:min(440px,90vw);max-height:44vh;overflow-y:auto;
     border:1px solid #232B3A;border-radius:14px;background:var(--bg2)}
+  /* your own standing, pinned below the board */
+  #lbYou{width:min(440px,90vw);margin-top:-14px;border:1px solid var(--accent);
+    border-radius:14px;background:rgba(139,157,255,.12);display:none}
+  #lbYou.on{display:block}
+  #lbYou .lbrow{border-bottom:none}
+  #lbYou .lbrank{color:var(--accent)}
+  .lbgap{text-align:center;color:var(--dim);font-size:10px;letter-spacing:.2em;
+    padding:6px 0 2px}
   .lbrow{display:flex;align-items:center;gap:12px;padding:11px 16px;
     border-bottom:1px solid #1D2431;font-size:13px}
   .lbrow:last-child{border-bottom:none}
@@ -193,6 +207,7 @@
   <input id="nameIn" maxlength="16" placeholder="nickname" autocomplete="off"
          autocapitalize="off" spellcheck="false">
   <button class="btn" id="btnName">Continue</button>
+  <p class="sub" style="font-size:9px;opacity:.5" id="buildTag"></p>
 </div>
 
 <!-- START -->
@@ -227,6 +242,7 @@
     <button class="lbtab" id="tabLocal">This device</button>
   </div>
   <div id="lbWrap"><div id="lbState">Loading…</div></div>
+  <div id="lbYou"></div>
   <p class="sub" style="font-size:10px" id="lbNote"></p>
   <button class="btn" id="btnBoardBack">Back</button>
 </div>
@@ -267,6 +283,7 @@
    Opened as a local file (file://) there is no /api, so the game
    silently falls back to a this-device board.
    ============================================================ */
+const BUILD = "v5-clicks";     // bump this whenever you deploy
 const API_BASE = "/api/scores";
 const API_ON = location.protocol.startsWith("http");
 
@@ -487,20 +504,36 @@ function setLabel(text, color){
 }
 function clearLabel(){ chLabel.style.display = "none"; }
 
-/* ============ reliable tap binding ============ */
+/* ============ reliable tap binding ============
+   Plain click is the most reliable event across mouse, trackpad and touch.
+   The old version fired on pointerdown AND click with a 350ms time lock,
+   which meant a slow trackpad click could land inside the lock window and
+   be swallowed entirely. Now: one handler, one guard flag, no fighting the
+   browser with preventDefault. */
 function bindTap(el, fn){
-  let lastFire = 0;
+  let busy = false;
   const go = e => {
-    const now = performance.now();
-    if(now - lastFire < 350) return;
-    lastFire = now;
-    e.preventDefault(); e.stopPropagation();
+    if(busy) return;
+    busy = true;
+    setTimeout(() => { busy = false; }, 120);   // just enough to kill doubles
     ensureAudio();
     fn();
   };
-  el.addEventListener("pointerdown", go);
   el.addEventListener("click", go);
+  // touch devices: fire on touchend so there is no 300ms delay
+  el.addEventListener("touchend", e => { e.preventDefault(); go(e); }, {passive:false});
   el._act = fn;                       // keyboard nav activates via this
+}
+
+/* only ever one screen visible — a stale ".on" screen sitting invisibly
+   on top is the classic cause of "my clicks do nothing" */
+const SCREENS = ["scrName", "scrStart", "scrOver", "scrBoard"];
+function showScreen(id, focusIdx){
+  SCREENS.forEach(s => {
+    const el = $(s);
+    if(el) el.classList.toggle("on", s === id);
+  });
+  if(id) focusScreen(focusIdx == null ? 0 : focusIdx);
 }
 
 /* ============ evolution roadmap (read-only) ============ */
@@ -522,32 +555,48 @@ function renderCharGrid(container){
 /* ============ keyboard menu navigation ============ */
 let navIdx = -1;
 function menuItems(){
-  if($("scrName").classList.contains("on")) return [$("btnName")];
+  if($("scrName").classList.contains("on")) return [$("nameIn"), $("btnName")];
   if($("scrStart").classList.contains("on")) return [$("btnPlay"), $("btnBoard")];
   if($("scrOver").classList.contains("on"))  return [$("btnAgain"), $("btnOverBoard")];
-  if($("scrBoard").classList.contains("on")) return [$("btnBoardBack")];
+  if($("scrBoard").classList.contains("on")) return [$("tabGlobal"), $("tabLocal"), $("btnBoardBack")];
   return [];
+}
+/* whenever a screen appears, put the highlight on its first control so
+   arrows + Enter always have something to act on — no clicking required */
+function focusScreen(idx){
+  const items = menuItems();
+  navIdx = items.length ? (idx != null ? idx : 0) : -1;
+  setFocus(items);
 }
 function setFocus(items){
   document.querySelectorAll(".kfocus").forEach(el => el.classList.remove("kfocus"));
-  if(navIdx >= 0 && items[navIdx]) items[navIdx].classList.add("kfocus");
+  const el = navIdx >= 0 ? items[navIdx] : null;
+  if(!el) return;
+  el.classList.add("kfocus");
+  if(el.tagName === "INPUT") el.focus();
+  else if(document.activeElement && document.activeElement.tagName === "INPUT")
+    document.activeElement.blur();
 }
 function menuKey(e){
   const items = menuItems();
   if(!items.length) return false;
   const k = e.key;
   if(k === "ArrowRight" || k === "ArrowDown"){
-    navIdx = (navIdx + 1) % items.length;
+    navIdx = navIdx < 0 ? 0 : (navIdx + 1) % items.length;
     setFocus(items); e.preventDefault(); return true;
   }
   if(k === "ArrowLeft" || k === "ArrowUp"){
     navIdx = navIdx <= 0 ? items.length - 1 : navIdx - 1;
     setFocus(items); e.preventDefault(); return true;
   }
-  if(k === "Enter"){
+  if(k === "Enter" || k === " "){
     e.preventDefault();
-    if(navIdx >= 0 && items[navIdx] && items[navIdx]._act) items[navIdx]._act();
-    else startRun();                 // Enter with nothing focused = just play
+    // on the name screen, Enter must never skip past naming
+    if($("scrName").classList.contains("on")){ submitName(); return true; }
+    const el = navIdx >= 0 ? items[navIdx] : null;
+    if(el && el._act) el._act();
+    else if($("scrStart").classList.contains("on") ||
+            $("scrOver").classList.contains("on")) startRun();
     return true;
   }
   return false;
@@ -569,12 +618,21 @@ window.addEventListener("touchstart", e => {
   tryAbility();
 }, {passive:true});
 window.addEventListener("mousedown", e => {
-  if(S.running && !overMenu(e)) tryAbility();
+  if(!S.running) return;
+  if(document.querySelector(".screen.on")) return;   // a menu is open
+  if(overMenu(e)) return;
+  tryAbility();
 });
 const typing = () => document.activeElement && document.activeElement.tagName === "INPUT";
 window.addEventListener("keydown", e => {
   if(typing()){                        // let the nickname field have the keyboard
-    if(e.key === "Enter") submitName();
+    if(e.key === "Enter"){ submitName(); return; }
+    // arrows should still move focus off the field onto the button
+    if(e.key === "ArrowDown" || e.key === "ArrowUp" ||
+       e.key === "Tab"){
+      if(e.key !== "Tab"){ e.preventDefault(); menuKey(e); }
+      return;
+    }
     return;
   }
   keys[e.key.toLowerCase()] = true;
@@ -1078,6 +1136,18 @@ function updateChallenge(dt, d, diff){
 
 /* ============ run control ============ */
 function startRun(){
+  // last line of defence: never start a nameless run
+  if(!bank.name){
+    const typed = ($("nameIn").value || "").trim().slice(0, 16);
+    if(typed){
+      bank.name = typed;
+      try { localStorage.setItem(NAME_KEY, typed); } catch(e){}
+    } else {
+      showScreen("scrName", 0);
+      showHint("pick a name first", true);
+      return;
+    }
+  }
   Object.assign(S, {
     running:true, t:0, score:0, runCoins:0,
     cur:"orb", tier:0, peak:0,          // every run begins as Orb
@@ -1091,10 +1161,7 @@ function startRun(){
   clearLabel();
   navIdx = -1;
   document.querySelectorAll(".kfocus").forEach(el => el.classList.remove("kfocus"));
-  $("scrName").classList.remove("on");
-  $("scrStart").classList.remove("on");
-  $("scrOver").classList.remove("on");
-  $("scrBoard").classList.remove("on");
+  showScreen(null);              // gameplay: no screens at all
   hud.classList.add("on");
   showHint("10 coins to evolve");
   abilityBar.style.display = "none";
@@ -1127,7 +1194,10 @@ function endRun(){
   $("oChar").style.color = peak.color;
 
   submitScore(sc, peak.id);
-  setTimeout(() => { $("scrOver").classList.add("on"); hud.classList.remove("on"); navIdx = -1; }, 550);
+  setTimeout(() => {
+    hud.classList.remove("on");
+    showScreen("scrOver", 0);    // Run again is ready for Enter
+  }, 550);
 }
 
 function syncHud(){
@@ -1820,6 +1890,7 @@ function toggleSfx(){
 const localBoard = [];
 let boardMode = "global";
 let lastSubmitted = null;
+let myRank = null;        // {rank, total} from our most recent run
 
 const escapeHTML = str => String(str ?? "").replace(/[&<>'"]/g, t => ({
   "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;"
@@ -1827,7 +1898,14 @@ const escapeHTML = str => String(str ?? "").replace(/[&<>'"]/g, t => ({
 
 async function submitScore(score, characterId){
   if(score <= 0) return;
-  const entry = { username: bank.name || "anon", score, character: characterId };
+  // prefer the confirmed name, then whatever is typed, and only then "anon"
+  const typed = ($("nameIn") && $("nameIn").value || "").trim().slice(0, 16);
+  const who = bank.name || typed || "anon";
+  if(who === "anon"){
+    // should be unreachable — log loudly if a build ever regresses
+    console.warn("submitting without a name; bank.name was empty");
+  }
+  const entry = { username: who, score, character: characterId };
   lastSubmitted = entry;
   // always record locally so the board works offline too
   localBoard.push(entry);
@@ -1841,63 +1919,121 @@ async function submitScore(score, characterId){
       body: JSON.stringify(entry),
     });
     if(!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json().catch(() => null);
+    if(data && data.rank){
+      myRank = { rank: data.rank, total: data.total, ...entry };
+      showHint(`rank #${data.rank} of ${data.total}`, true);
+    }
   } catch(err){
     console.warn("score submit failed:", err);
   }
 }
 
 async function fetchBoard(){
-  const res = await fetch(API_BASE, { headers: { "Accept": "application/json" } });
-  if(!res.ok) throw new Error("HTTP " + res.status);
-  const rows = await res.json();
-  return Array.isArray(rows) ? rows : [];
+  // ask for our standing at the same time, so we learn our rank even when
+  // we're nowhere near the top of the list
+  let url = API_BASE;
+  if(bank.best > 0){
+    url += `?score=${encodeURIComponent(bank.best)}` +
+           `&name=${encodeURIComponent(bank.name || "you")}`;
+  }
+  const res = await fetch(url, { headers: { "Accept": "application/json" } });
+  const raw = await res.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch(e){ /* not JSON */ }
+  if(!res.ok){
+    const msg = (data && (data.detail || data.hint || data.error))
+      || raw.slice(0, 120) || ("HTTP " + res.status);
+    const err = new Error(msg);
+    err.serverMessage = msg;
+    throw err;
+  }
+  // new shape { top, total, you }; tolerate the old plain-array shape
+  if(Array.isArray(data)) return { top: data, total: data.length, you: null };
+  return {
+    top: Array.isArray(data.top) ? data.top : [],
+    total: Number(data.total) || 0,
+    you: data.you || null,
+  };
 }
 
-function paintBoard(rows, note){
+function rowHTML(r, i, mine){
+  const c = charById(r.character) || CHARS[0];
+  const name = r.username ?? r.name;
+  const rank = r.rank != null ? r.rank : i + 1;
+  return `<div class="lbrow${mine ? " me" : ""}">
+    <span class="lbrank">${rank}</span>
+    <span class="lbchar" style="background:${c.color};box-shadow:0 0 6px ${c.color}"></span>
+    <span class="lbname">${escapeHTML(name || "anon")}</span>
+    <span class="lbscore">${Number(r.score) || 0}</span>
+  </div>`;
+}
+
+function paintBoard(payload, note){
   const wrap = $("lbWrap");
+  const youEl = $("lbYou");
+  const rows = Array.isArray(payload) ? payload : (payload.top || []);
+  const you = Array.isArray(payload) ? null : payload.you;
+  const total = Array.isArray(payload) ? rows.length : payload.total;
+
   $("lbNote").textContent = note || "";
-  if(!rows || !rows.length){
+
+  if(!rows.length){
     wrap.innerHTML = `<div id="lbState">No scores yet — be the first</div>`;
+    youEl.classList.remove("on");
     return;
   }
+
+  // is our standing already visible in the list above?
+  const inTop = you && you.rank <= rows.length;
   wrap.innerHTML = rows.map((r, i) => {
-    const c = charById(r.character) || CHARS[0];
-    const name = r.username ?? r.name;
-    const mine = lastSubmitted && name === lastSubmitted.username &&
-                 Number(r.score) === lastSubmitted.score;
-    return `<div class="lbrow${mine ? " me" : ""}">
-      <span class="lbrank">${i + 1}</span>
-      <span class="lbchar" style="background:${c.color};box-shadow:0 0 6px ${c.color}"></span>
-      <span class="lbname">${escapeHTML(name || "anon")}</span>
-      <span class="lbscore">${Number(r.score) || 0}</span>
-    </div>`;
+    const mine = you && inTop && (i + 1) === you.rank &&
+                 (r.username ?? r.name) === you.username;
+    return rowHTML(r, i, mine);
   }).join("");
+
+  // pin our own rank underneath when we didn't make the cut
+  if(you && !inTop){
+    youEl.innerHTML =
+      `<div class="lbgap">· · ·</div>` +
+      rowHTML({ ...you, character: (lastSubmitted && lastSubmitted.character) || "orb" }, 0, true);
+    youEl.classList.add("on");
+  } else {
+    youEl.classList.remove("on");
+  }
+
+  if(total > rows.length){
+    $("lbNote").textContent = `${note || ""} ${total} runs recorded.`.trim();
+  }
 }
 
 async function showBoard(){
   $("lbWrap").innerHTML = `<div id="lbState">Loading…</div>`;
+  $("lbYou").classList.remove("on");
   $("tabGlobal").classList.toggle("on", boardMode === "global");
   $("tabLocal").classList.toggle("on", boardMode === "local");
   if(boardMode === "local"){
-    paintBoard(localBoard.slice(0, 20), "Scores from this session only.");
+    paintBoard({ top: localBoard.slice(0, 50), total: localBoard.length, you: null },
+      "Scores from this session only.");
     return;
   }
   if(!API_ON){
-    paintBoard(localBoard.slice(0, 20),
-      "Running from a local file — deploy to Cloudflare Pages for the global board.");
+    paintBoard({ top: localBoard.slice(0, 50), total: localBoard.length, you: null },
+      "Running from a local file — deploy for the global board.");
     return;
   }
   try {
-    paintBoard(await fetchBoard(), "Top 20 worldwide · Neon via Cloudflare.");
+    paintBoard(await fetchBoard(), "Top 50 worldwide.");
   } catch(err){
-    paintBoard(localBoard.slice(0, 20), "Couldn't reach the server — showing local scores.");
+    const why = err && err.serverMessage ? err.serverMessage : String(err.message || err);
+    paintBoard({ top: localBoard.slice(0, 50), total: localBoard.length, you: null },
+      "Server error: " + why);
+    console.error("Leaderboard server said:", why);
   }
 }
 
-function openBoard(from){
-  from.classList.remove("on");
-  $("scrBoard").classList.add("on");
-  navIdx = -1;
+function openBoard(){
+  showScreen("scrBoard", 2);   // land on Back
   showBoard();
 }
 
@@ -1914,7 +2050,7 @@ setInterval(() => {
 /* Like showBoard, but repaints in place without flashing "Loading…" */
 async function refreshBoard(){
   try {
-    paintBoard(await fetchBoard(), "Top 20 worldwide · Neon via Cloudflare.");
+    paintBoard(await fetchBoard(), "Top 50 worldwide.");
   } catch(err){
     /* stay on the last good render — a blip shouldn't wipe the board */
   }
@@ -1933,28 +2069,25 @@ function submitName(){
   bank.name = v;
   try { localStorage.setItem(NAME_KEY, v); } catch(e){ /* private mode */ }
   $("nameIn").blur();
-  $("scrName").classList.remove("on");
-  $("scrStart").classList.add("on");
-  navIdx = -1;
+  showScreen("scrStart", 0);
   sfx("collect");
 }
 function restoreName(){
   let saved = "";
   try { saved = localStorage.getItem(NAME_KEY) || ""; } catch(e){ /* private mode */ }
-  if(saved) $("nameIn").value = saved;
+  if(saved){
+    $("nameIn").value = saved;
+    bank.name = saved;          // returning player: name is known immediately
+  }
 }
 
 /* ============ buttons ============ */
 bindTap($("btnName"), submitName);
 bindTap($("btnPlay"), startRun);
 bindTap($("btnAgain"), startRun);
-bindTap($("btnBoard"), () => openBoard($("scrStart")));
-bindTap($("btnOverBoard"), () => openBoard($("scrOver")));
-bindTap($("btnBoardBack"), () => {
-  $("scrBoard").classList.remove("on");
-  $("scrStart").classList.add("on");
-  navIdx = -1;
-});
+bindTap($("btnBoard"), () => openBoard());
+bindTap($("btnOverBoard"), () => openBoard());
+bindTap($("btnBoardBack"), () => showScreen("scrStart", 0));
 bindTap($("tabGlobal"), () => { boardMode = "global"; showBoard(); });
 bindTap($("tabLocal"),  () => { boardMode = "local";  showBoard(); });
 bindTap($("btnFull"), toggleFullscreen);
@@ -1965,7 +2098,8 @@ renderCharGrid($("chars"));
 renderTrack();
 syncHud();
 restoreName();
-setTimeout(() => $("nameIn").focus(), 300);
+$("buildTag").textContent = "build " + BUILD;
+showScreen("scrName", 0);
 })();
 </script>
 </body>
