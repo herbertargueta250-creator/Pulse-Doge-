@@ -113,6 +113,23 @@
   .cbtn:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
   .cbtn *{pointer-events:none}
 
+  /* credits — visible on menus, never during play */
+  #credits{position:fixed;bottom:14px;left:0;right:0;text-align:center;
+    color:var(--dim);font-size:10px;letter-spacing:.22em;text-transform:uppercase;
+    pointer-events:none;opacity:0;transition:opacity .3s;z-index:6}
+  #credits.on{opacity:.55}
+
+  /* "playing as ___ · change" line */
+  #whoBar{display:flex;align-items:center;gap:10px;font-size:11px;
+    letter-spacing:.18em;text-transform:uppercase;color:var(--dim)}
+  #whoName{color:var(--accent);font-weight:600}
+  .linkbtn{background:none;border:none;color:var(--dim);font:inherit;font-size:11px;
+    letter-spacing:.18em;text-transform:uppercase;cursor:pointer;padding:8px 12px;
+    border-radius:8px;border:1px solid transparent;touch-action:manipulation}
+  .linkbtn:hover{color:var(--ink);border-color:#2A3345}
+  .linkbtn.kfocus{color:var(--ink);outline-offset:2px}
+  .linkbtn:active{transform:scale(.96)}
+
   #hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:var(--dim);
     font-size:11px;letter-spacing:.24em;text-transform:uppercase;pointer-events:none;
     opacity:0;transition:opacity .35s}
@@ -203,7 +220,7 @@
 <!-- NAME ENTRY -->
 <div class="screen on" id="scrName">
   <h1>Pulse <b>Dodge</b></h1>
-  <p class="sub">Pick a name for the leaderboard.</p>
+  <p class="sub" id="nameSub">Pick a name for the leaderboard.</p>
   <input id="nameIn" maxlength="16" placeholder="nickname" autocomplete="off"
          autocapitalize="off" spellcheck="false">
   <button class="btn" id="btnName">Continue</button>
@@ -215,6 +232,8 @@
   <h1>Pulse <b>Dodge</b></h1>
   <p class="sub">Survive. Collect <span style="color:var(--gold)">coins</span> mid-run to evolve — every run starts as Orb and can end as Phase.</p>
   <div class="char-grid" id="chars"></div>
+  <div id="whoBar">Playing as <span id="whoName">—</span>
+    <button class="linkbtn" id="btnChangeName">Change</button></div>
   <button class="btn" id="btnPlay">Play</button>
   <button class="btn quiet" id="btnBoard">Leaderboard</button>
   <p class="sub" style="font-size:11px">Move · mouse / <span class="kbd">WASD</span> &nbsp;·&nbsp; Ability · <span class="kbd">Space</span> or tap</p>
@@ -232,6 +251,7 @@
   <div id="unlockMsg"></div>
   <button class="btn" id="btnAgain">Run again</button>
   <button class="btn quiet" id="btnOverBoard">Leaderboard</button>
+  <button class="btn quiet" id="btnOverMenu">Main menu</button>
 </div>
 
 <!-- LEADERBOARD -->
@@ -244,7 +264,8 @@
   <div id="lbWrap"><div id="lbState">Loading…</div></div>
   <div id="lbYou"></div>
   <p class="sub" style="font-size:10px" id="lbNote"></p>
-  <button class="btn" id="btnBoardBack">Back</button>
+  <button class="btn" id="btnBoardPlay">Play</button>
+  <button class="btn quiet" id="btnBoardBack">Main menu</button>
 </div>
 
 <!-- EVOLUTION TOAST -->
@@ -254,6 +275,7 @@
 </div>
 
 <div id="hint">stay alive · grab gold</div>
+<div id="credits">Developed by Herbert Argueta</div>
 
 <div id="corner">
   <button class="cbtn" id="btnMusic" aria-label="Toggle music" title="Music (M)"><span>♪</span></button>
@@ -283,7 +305,7 @@
    Opened as a local file (file://) there is no /api, so the game
    silently falls back to a this-device board.
    ============================================================ */
-const BUILD = "v5-clicks";     // bump this whenever you deploy
+const BUILD = "v6b-profile";     // bump this whenever you deploy
 const API_BASE = "/api/scores";
 const API_ON = location.protocol.startsWith("http");
 
@@ -533,6 +555,8 @@ function showScreen(id, focusIdx){
     const el = $(s);
     if(el) el.classList.toggle("on", s === id);
   });
+  const cr = $("credits");
+  if(cr) cr.classList.toggle("on", !!id);      // menus only, never mid-run
   if(id) focusScreen(focusIdx == null ? 0 : focusIdx);
 }
 
@@ -556,9 +580,12 @@ function renderCharGrid(container){
 let navIdx = -1;
 function menuItems(){
   if($("scrName").classList.contains("on")) return [$("nameIn"), $("btnName")];
-  if($("scrStart").classList.contains("on")) return [$("btnPlay"), $("btnBoard")];
-  if($("scrOver").classList.contains("on"))  return [$("btnAgain"), $("btnOverBoard")];
-  if($("scrBoard").classList.contains("on")) return [$("tabGlobal"), $("tabLocal"), $("btnBoardBack")];
+  if($("scrStart").classList.contains("on"))
+    return [$("btnPlay"), $("btnBoard"), $("btnChangeName")];
+  if($("scrOver").classList.contains("on"))
+    return [$("btnAgain"), $("btnOverBoard"), $("btnOverMenu")];
+  if($("scrBoard").classList.contains("on"))
+    return [$("btnBoardPlay"), $("btnBoardBack"), $("tabGlobal"), $("tabLocal")];
   return [];
 }
 /* whenever a screen appears, put the highlight on its first control so
@@ -638,6 +665,8 @@ window.addEventListener("keydown", e => {
   keys[e.key.toLowerCase()] = true;
   if(!S.running && menuKey(e)) return;
   if(e.key === " "){ e.preventDefault(); if(S.running) tryAbility(); }
+  if(e.key === "l" || e.key === "L"){ if(!S.running) openBoard(); }
+  if(e.key === "Escape" && !S.running) showScreen("scrStart", 0);
   if(e.key === "f" || e.key === "F") toggleFullscreen();
   if(e.key === "m" || e.key === "M") toggleMusic();
   if(e.key === "s" || e.key === "S") { if(!S.running) toggleSfx(); }
@@ -1140,10 +1169,9 @@ function startRun(){
   if(!bank.name){
     const typed = ($("nameIn").value || "").trim().slice(0, 16);
     if(typed){
-      bank.name = typed;
-      try { localStorage.setItem(NAME_KEY, typed); } catch(e){}
+      bank.name = typed; saveProfile(); syncWho();
     } else {
-      showScreen("scrName", 0);
+      openNameEntry();
       showHint("pick a name first", true);
       return;
     }
@@ -1178,7 +1206,7 @@ function endRun(){
   const sc = Math.floor(S.score);
   const peak = CHARS[S.peak];
   const newBest = sc > bank.best;
-  if(newBest) bank.best = sc;
+  if(newBest){ bank.best = sc; saveProfile(); }
 
   let msg = "";
   const next = CHARS[S.peak + 1];
@@ -2056,8 +2084,46 @@ async function refreshBoard(){
   }
 }
 
+/* ============ saved profile ============
+   One key holds BOTH the nickname and the best score, so the game either
+   remembers you fully or not at all. */
+const SAVE_KEY = "pulse_dodge_profile";
+
+function saveProfile(){
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      name: bank.name || "",
+      best: bank.best || 0,
+    }));
+  } catch(e){ /* private mode — just don't persist */ }
+}
+function loadProfile(){
+  let raw = null;
+  try {
+    raw = localStorage.getItem(SAVE_KEY);
+    if(!raw){                                  // migrate the old name-only key
+      const legacy = localStorage.getItem("pulse_dodge_name");
+      if(legacy) raw = JSON.stringify({ name: legacy, best: 0 });
+    }
+  } catch(e){ return; }
+  if(!raw) return;
+  try {
+    const p = JSON.parse(raw);
+    if(p && typeof p === "object"){
+      bank.name = String(p.name || "").slice(0, 16);
+      bank.best = Math.max(0, Math.floor(Number(p.best) || 0));
+    }
+  } catch(e){ /* corrupt save — ignore */ }
+}
+function forgetProfile(){
+  bank.name = ""; bank.best = 0;
+  try {
+    localStorage.removeItem(SAVE_KEY);
+    localStorage.removeItem("pulse_dodge_name");
+  } catch(e){}
+}
+
 /* ============ name entry ============ */
-const NAME_KEY = "pulse_dodge_name";
 function submitName(){
   const v = $("nameIn").value.trim().slice(0, 16);
   if(!v){
@@ -2067,18 +2133,26 @@ function submitName(){
     return;
   }
   bank.name = v;
-  try { localStorage.setItem(NAME_KEY, v); } catch(e){ /* private mode */ }
+  saveProfile();
   $("nameIn").blur();
+  syncWho();
   showScreen("scrStart", 0);
   sfx("collect");
 }
-function restoreName(){
-  let saved = "";
-  try { saved = localStorage.getItem(NAME_KEY) || ""; } catch(e){ /* private mode */ }
-  if(saved){
-    $("nameIn").value = saved;
-    bank.name = saved;          // returning player: name is known immediately
-  }
+/* open the name screen ready to be edited */
+function openNameEntry(){
+  $("nameIn").value = bank.name || "";
+  $("nameSub").textContent = bank.name
+    ? "Change your leaderboard name."
+    : "Pick a name for the leaderboard.";
+  showScreen("scrName", 0);
+  const el = $("nameIn");
+  el.focus();
+  el.select();                    // typing replaces the old name immediately
+}
+function syncWho(){
+  const el = $("whoName");
+  if(el) el.textContent = bank.name || "—";
 }
 
 /* ============ buttons ============ */
@@ -2087,7 +2161,10 @@ bindTap($("btnPlay"), startRun);
 bindTap($("btnAgain"), startRun);
 bindTap($("btnBoard"), () => openBoard());
 bindTap($("btnOverBoard"), () => openBoard());
+bindTap($("btnOverMenu"), () => showScreen("scrStart", 0));
+bindTap($("btnBoardPlay"), startRun);
 bindTap($("btnBoardBack"), () => showScreen("scrStart", 0));
+bindTap($("btnChangeName"), openNameEntry);
 bindTap($("tabGlobal"), () => { boardMode = "global"; showBoard(); });
 bindTap($("tabLocal"),  () => { boardMode = "local";  showBoard(); });
 bindTap($("btnFull"), toggleFullscreen);
@@ -2097,9 +2174,13 @@ bindTap($("btnSfx"), toggleSfx);
 renderCharGrid($("chars"));
 renderTrack();
 syncHud();
-restoreName();
+loadProfile();
+syncWho();
+syncHud();
 $("buildTag").textContent = "build " + BUILD;
-showScreen("scrName", 0);
+// a returning player goes straight to the menu; a new one names themselves
+if(bank.name) showScreen("scrStart", 0);
+else openNameEntry();
 })();
 </script>
 </body>
